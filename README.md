@@ -23,6 +23,11 @@ This repository provides fully patched and compiled ACPI tables (DSDT and ECDT) 
    * **Cause:** The ECDT (Embedded Controller Data Table) shipped with a completely blank `Namepath`.
    * **Fix:** Decompiled the ECDT and added the proper path `\_SB.PCI0.SBRG.EC`, allowing early-boot EC initialization.
 
+5. **`wmi_bus: [Firmware Bug]: WQAK data block query control method not found`**
+   * **Symptom:** WMI (Windows Management Instrumentation) driver fails to find the required methods, resulting in firmware bugs in `dmesg` and missing MSI hotkeys.
+   * **Cause:** The `_WDG` buffer inside the `SCM0` WMI device declares several data blocks with query methods (`WQAK`, `WQAL`, `WMAJ`), but those methods are actually missing from the DSDT.
+   * **Fix:** Injected dummy `WQAK`, `WQAL`, and `WMAJ` methods that return a safe, empty Buffer. This satisfies the Linux WMI driver, resolving the error and allowing MSI WMI hotkeys to initialize properly.
+
 ## Repository Structure
 
 * `patches/` - The decompiled and human-readable `.dsl` source code containing the fixes.

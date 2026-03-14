@@ -18,7 +18,7 @@
  *     Compiler ID      "INTL"
  *     Compiler Version 0x20250404 (539296772)
  */
-DefinitionBlock ("", "DSDT", 2, "MSI_NB", "MEGABOOK", 0x0107200F)
+DefinitionBlock ("", "DSDT", 2, "MSI_NB", "MEGABOOK", 0x01072010)
 {
     External (_PR_.P000, UnknownObj)
     External (_PR_.P000._PSS, PkgObj)
@@ -11661,6 +11661,22 @@ DefinitionBlock ("", "DSDT", 2, "MSI_NB", "MEGABOOK", 0x0107200F)
                 /* 0058 */  0x8A, 0xE6, 0x11, 0x45, 0xB7, 0x51, 0xBE, 0x3F,  // ...E.Q.?
                 /* 0060 */  0xC0, 0x00, 0x01, 0x09                           // ....
             })
+
+            Method (WQAK, 1, NotSerialized)
+            {
+                Return (Buffer (One) { 0x00 })
+            }
+
+            Method (WQAL, 1, NotSerialized)
+            {
+                Return (Buffer (One) { 0x00 })
+            }
+
+            Method (WMAJ, 3, NotSerialized)
+            {
+                Return (Buffer (One) { 0x00 })
+            }
+
             OperationRegion (ECM2, EmbeddedControl, Zero, 0x0100)
             Field (ECM2, ByteAcc, NoLock, Preserve)
             {
