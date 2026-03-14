@@ -31,7 +31,13 @@ This repository provides fully patched and compiled ACPI tables (DSDT and ECDT) 
 ## Repository Structure
 
 * `patches/` - The decompiled and human-readable `.dsl` source code containing the fixes.
+  * `DSDT.dsl` - The safe, stable patch (Fixes fatal bugs only).
+  * `DSDT_Optimized.dsl` - The aggressively optimized CachyOS-level patch (Fixes fatal bugs + forces Global Serialization, removes dead _PRS blocks, and strictly enforces ACPI device type standards).
+  * `ECDT.dsl` - The ECDT Namepath fix.
 * `compiled/` - The compiled `.aml` binaries ready to be loaded by the Linux kernel.
+  * `dsdt.aml` - Standard safe fix.
+  * `dsdt_optimized.aml` - Aggressively optimized fix (use this if you want maximum ACPI spec compliance).
+  * `ecdt.aml` - ECDT fix.
 
 ## How to Install (Arch Linux / mkinitcpio)
 
