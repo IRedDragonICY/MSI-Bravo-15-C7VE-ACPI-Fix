@@ -1,72 +1,90 @@
-# MSI Bravo 15 C7VE (MS-158N) ACPI Fixes for Linux
+# MSI Bravo 15 C7VE ACPI Fixes for Linux
 
-This repository provides fully patched and compiled ACPI tables (DSDT and ECDT) for the **MSI Bravo 15 C7VE**. These fixes resolve several notorious BIOS/Firmware bugs that cause ACPI errors, power management failures, and namespace collisions on Linux.
+This repository provides ACPI patches (specifically for the DSDT and ECDT) designed to resolve several BIOS bugs inherent to the MSI Bravo 15 C7VE. These bugs commonly cause `AE_NOT_FOUND`, `AE_ALREADY_EXISTS`, namespace collision errors, and firmware bugs in the Linux kernel log (`dmesg`), which can interfere with power management, thermal sensors, and hardware function keys.
 
-## Fixed Bugs
+Shell scripts (`patch.sh` and `patch_ecdt.sh`) are provided to safely apply these fixes directly to raw, decompiled ACPI files.
 
-1. **`AE_ALREADY_EXISTS` (OperationRegion Collision)**
-   * **Symptom:** Logs flooded with `Failure creating named object [\M040], AE_ALREADY_EXISTS` and missing EC variables.
-   * **Cause:** The manufacturer improperly named an `OperationRegion` the exact same name as its parent `Device (EC)`. This collision aborts the parsing of the Embedded Controller block. Because the block aborts, GPU power-management methods (like `PEGP.GPS`) fail to find variables like `E706` and throw `AE_NOT_FOUND`.
-   * **Fix:** Renamed the internal `OperationRegion` names to `ECM1` and `ECM2` within the DSDT, allowing the entire EC to initialize properly.
+## Applied Fixes
 
-2. **`AE_NOT_FOUND` on `\_SB.PCI0.SBRG.EC0` (Broken SSDT Scopes)**
-   * **Symptom:** `Skipping parse of AML opcode: Scope` and `Could not resolve symbol [\_SB.PCI0.SBRG.EC0], AE_NOT_FOUND`.
-   * **Cause:** Several supplemental AMD tables (SSDT9, SSDT16, SSDT24) are hardcoded to look for a device named `EC0`, while the main DSDT declares it as `EC`. Overriding these SSDTs directly causes namespace crashes because they share the identical `AmdTable` ID with 20 other tables.
-   * **Fix:** Injected a benign "dummy" `Device (EC0)` into the main DSDT without a Hardware ID (`_HID`). This satisfies the SSDTs' scope-checking without confusing the Linux `acpi-ec` driver.
+### DSDT Patches (`patch.sh`)
 
-3. **`No handler for Region [VRTC] [SystemCMOS]`**
-   * **Symptom:** Errors related to the `_Q9A` method failing to read CMOS data.
-   * **Fix:** Commented out the broken `FromBCD` variable reads inside the `_Q9A` method in the DSDT.
+1. **NVIDIA `AE_NOT_FOUND E706` Resolution (Namespace Collision)**
+   * **Cause:** The manufacturer improperly named an `OperationRegion` identically to its parent `Device (EC)`. This collision aborts the parsing of the Embedded Controller block, causing dependent devices (like the NVIDIA GPU SSDT looking for `E706`) to fail.
+   * **Fix:** Renames the `OperationRegion` to `ECRM`. The core `Device (EC)` is left intact, ensuring the NVIDIA SSDT and MSI WMI drivers (for Fn brightness keys) function correctly.
 
-4. **`Ignoring ECDT due to empty ID string`**
-   * **Symptom:** Kernel logs report an early firmware bug for the ECDT.
+2. **Duplicate `Device (RTL8)` (`AE_ALREADY_EXISTS`)**
+   * **Cause:** An empty, duplicate `Device (RTL8)` declaration causes a boot warning.
+   * **Fix:** Comments out the duplicate block.
+
+3. **`SystemCMOS` Region Error (`AE_NOT_EXIST`)**
+   * **Cause:** The `VRTC` region is declared outside an appropriate device scope, causing `_Q9A` to fail when reading CMOS data.
+   * **Fix:** Relocates the `VRTC` OperationRegion into the `Device (RTC0)` scope and updates the absolute paths for `YEAR`, `MON`, and `DAY` variables.
+
+4. **MSI PTEC Typo Bug**
+   * **Cause:** A typo in the manufacturer's logic incorrectly targets `P004` instead of `P00A` when calculating package sizes.
+   * **Fix:** Corrects the variable reference to `\_PR.P00A.PPCV`.
+
+5. **`Scope (EC0_)` Error (`AE_NOT_FOUND`)**
+   * **Cause:** Supplemental AMD SSDTs are hardcoded to reference a device named `EC0`, while the main DSDT defines it as `EC`. Renaming `EC` to `EC0` globally breaks brightness keys and NVIDIA power management. Using an `Alias (EC, EC0)` breaks strict ACPI parsing because a `Scope` operator cannot target an Alias.
+   * **Fix:** Injects a "dummy" `Device (EC0)` containing a `_HID` (Hardware ID) and `_STA` set to `Zero` (disabled) just before `Device (PS2K)`. This safely satisfies the AMD SSDTs' scope checks without interfering with the actual `Device (EC)`.
+
+6. **`_DSM` Return Type Warning**
+   * **Cause:** Certain `_DSM` (Device-Specific Method) functions return an empty `Buffer` instead of the expected `Package`, triggering a strict ACPI type mismatch warning.
+   * **Fix:** Replaces the empty `Buffer` returns with empty `Package` returns.
+
+### ECDT Patches (`patch_ecdt.sh`)
+
+1. **`Ignoring ECDT due to empty ID string`**
    * **Cause:** The ECDT (Embedded Controller Data Table) shipped with a completely blank `Namepath`.
-   * **Fix:** Decompiled the ECDT and added the proper path `\_SB.PCI0.SBRG.EC`, allowing early-boot EC initialization.
+   * **Fix:** Injects the correct EC path (`\_SB.PCI0.SBRG.EC`).
 
-5. **`wmi_bus: [Firmware Bug]: WQAK data block query control method not found`**
-   * **Symptom:** WMI (Windows Management Instrumentation) driver fails to find the required methods, resulting in firmware bugs in `dmesg` and missing MSI hotkeys.
-   * **Cause:** The `_WDG` buffer inside the `SCM0` WMI device declares several data blocks with query methods (`WQAK`, `WQAL`, `WMAJ`), but those methods are actually missing from the DSDT.
-   * **Fix:** Injected dummy `WQAK`, `WQAL`, and `WMAJ` methods that return a safe, empty Buffer. This satisfies the Linux WMI driver, resolving the error and allowing MSI WMI hotkeys to initialize properly.
+---
+**Critical Note on Versioning (OEM Revision):** 
+For the Linux kernel to accept an ACPI override via `initrd`, the patched table's `OEM Revision` must be strictly greater than the one residing in the system firmware. Both `patch.sh` and `patch_ecdt.sh` automatically bump these revisions (e.g., from `01072009` to `01072010` or higher) to ensure the kernel applies the changes.
 
-## Repository Structure
+## Usage Instructions
 
-* `patches/` - The decompiled and human-readable `.dsl` source code containing the fixes.
-  * `DSDT.dsl` - The safe, stable patch (Fixes fatal bugs only).
-  * `DSDT_Optimized.dsl` - The aggressively optimized CachyOS-level patch (Fixes fatal bugs + forces Global Serialization, removes dead _PRS blocks, and strictly enforces ACPI device type standards).
-  * `ECDT.dsl` - The ECDT Namepath fix.
-* `compiled/` - The compiled `.aml` binaries ready to be loaded by the Linux kernel.
-  * `dsdt.aml` - Standard safe fix.
-  * `dsdt_optimized.aml` - Aggressively optimized fix (use this if you want maximum ACPI spec compliance).
-  * `ecdt.aml` - ECDT fix.
+If you wish to patch your own tables manually, follow these steps:
 
-## How to Install (Arch Linux / mkinitcpio)
+### 1. Dump & Decompile
+```bash
+# Dump DSDT and ECDT
+sudo cat /sys/firmware/acpi/tables/DSDT > dsdt.dat
+sudo cat /sys/firmware/acpi/tables/ECDT > ecdt.dat
 
-This method safely loads the patched tables before the kernel boots.
+# Decompile to readable DSL
+iasl -d dsdt.dat
+iasl -d ecdt.dat
+```
 
-1. Copy the compiled `.aml` files into the initcpio overrides directory:
-   ```bash
-   sudo mkdir -p /etc/initcpio/acpi_override
-   sudo cp compiled/dsdt.aml /etc/initcpio/acpi_override/
-   sudo cp compiled/ecdt.aml /etc/initcpio/acpi_override/
-   ```
+### 2. Apply Patches
+```bash
+# Make scripts executable
+chmod +x patch.sh patch_ecdt.sh
 
-2. Edit your mkinitcpio configuration to enable the override hook. Open `/etc/mkinitcpio.conf` and add `acpi_override` to the end of the `HOOKS` array. It should look similar to this:
-   ```bash
-   HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck acpi_override)
-   ```
+# Run patches
+./patch.sh dsdt.dsl
+./patch_ecdt.sh ecdt.dsl
+```
 
-3. Regenerate your initramfs images:
-   ```bash
-   sudo mkinitcpio -P
-   ```
+### 3. Recompile
+```bash
+iasl -ve dsdt.dsl
+iasl -tc ecdt.dsl
+```
 
-4. Reboot your system. You can verify the tables loaded by checking `dmesg`:
-   ```bash
-   journalctl -b -k | grep "Table Upgrade"
-   ```
+### 4. Install via ACPI Override (Arch Linux / mkinitcpio)
+```bash
+sudo mkdir -p /etc/initcpio/acpi_override
+sudo cp dsdt.aml /etc/initcpio/acpi_override/
+sudo cp ecdt.aml /etc/initcpio/acpi_override/
 
-## Note on Nvidia `_DSM` Warnings
-You may still see warnings similar to:
-`ACPI Warning: \_SB.NPCF._DSM: Argument #4 type mismatch - Found [Buffer], ACPI requires [Package]`
+# Ensure 'acpi_override' is at the end of your HOOKS array in /etc/mkinitcpio.conf
+sudo mkinitcpio -P
+```
 
-**This is normal and safe.** It is a known bug strictly inside the proprietary Nvidia Linux driver where it sends a Buffer instead of a Package. The Linux ACPI interpreter automatically corrects the data type on the fly, so power management works correctly regardless. It cannot be fixed via ACPI tables.
+### 5. Verify
+Reboot and check `dmesg` to verify the errors are resolved:
+```bash
+dmesg | grep -i acpi
+```
