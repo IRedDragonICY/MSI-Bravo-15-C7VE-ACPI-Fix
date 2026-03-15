@@ -1,9 +1,18 @@
 #!/bin/bash
 
+# Target file - ensure this matches the decompiled original DSDT file
+FILE="${1:-dsdt.dsl}"
+
 if [ "$EUID" -ne 0 ]; then
   echo "Error: Please run this script with sudo!"
-  echo "Example: sudo ./patch.sh"
+  echo "Example: sudo ./patch.sh dsdt.dsl"
   exit 1
+fi
+
+if [ ! -f "$FILE" ]; then
+    echo "Error: File $FILE not found."
+    echo "Usage: sudo ./patch.sh <dsdt.dsl>"
+    exit 1
 fi
 
 if ! command -v iasl &> /dev/null; then
@@ -11,51 +20,21 @@ if ! command -v iasl &> /dev/null; then
     exit 1
 fi
 
-# Fallback to original/dsdt.dsl if no parameter is provided
-if [ -n "$1" ]; then
-    SOURCE_FILE="$1"
-else
-    if [ -f "original/dsdt.dsl" ]; then
-        SOURCE_FILE="original/dsdt.dsl"
-        echo "No file provided. Using default: $SOURCE_FILE"
-    else
-        SOURCE_FILE="dsdt.dsl"
-    fi
-fi
-
-if [ ! -f "$SOURCE_FILE" ]; then
-    echo "Error: File $SOURCE_FILE not found."
-    echo "Usage: sudo ./patch.sh [path/to/dsdt.dsl]"
-    exit 1
-fi
-
-# Create a working copy so we don't overwrite the user's original file
-FILE="dsdt_patched.dsl"
-cp "$SOURCE_FILE" "$FILE"
-if [ -n "$SUDO_USER" ]; then
-    chown $SUDO_USER:$SUDO_USER "$FILE"
-fi
-
 echo "Applying MSI ACPI Fixes to $FILE..."
 
 # ------------------------------------------------------------------
 # FIX 1: NVIDIA / Thermal Error Resolution (AE_NOT_FOUND E706)
-# Rename the OperationRegion from "EC" to "ECRM" to prevent
-# namespace collisions with Device (EC).
-# Device (EC) remains intact to ensure NVIDIA SSDT and Fn keys function.
 # ------------------------------------------------------------------
 sed -i 's/OperationRegion (EC, SystemMemory, 0xFE0B0400/OperationRegion (ECRM, SystemMemory, 0xFE0B0400/' "$FILE"
 sed -i 's/Field (EC, ByteAcc, NoLock, Preserve)/Field (ECRM, ByteAcc, NoLock, Preserve)/' "$FILE"
 
 # ------------------------------------------------------------------
 # FIX 2: AE_ALREADY_EXISTS Resolution for Device (RTL8)
-# Comment out the empty, duplicate RTL8 device declaration.
 # ------------------------------------------------------------------
 sed -i '/Device (RTL8)/,+3 s/^/\/\//' "$FILE"
 
 # ------------------------------------------------------------------
 # FIX 3: SystemCMOS / AE_NOT_EXIST Resolution
-# Relocate the VRTC OperationRegion into the Device (RTC0) scope.
 # ------------------------------------------------------------------
 sed -i '/OperationRegion (VRTC, SystemCMOS, Zero, 0x10)/,+17d' "$FILE"
 sed -i '/Name (_HID, EisaId ("PNP0B00") \/\* AT Real-Time Clock \*\/)/a \
@@ -83,55 +62,75 @@ sed -i 's/FromBCD (DAY,/FromBCD (\\_SB.PCI0.SBRG.RTC0.DAY,/' "$FILE"
 
 # ------------------------------------------------------------------
 # FIX 4: MSI PTEC Bug Resolution
-# Fix incorrect offset overwriting P004 instead of P00A.
 # ------------------------------------------------------------------
 sed -i 's/\\_PR\.P004\.PPCV = (SizeOf (\\_PR\.P00A\._PSS) - One)/\\_PR.P00A.PPCV = (SizeOf (\\_PR.P00A._PSS) - One)/g' "$FILE"
 
 # ------------------------------------------------------------------
 # FIX 5: EC0 Scope Error Resolution (AE_NOT_FOUND)
-# Define a dummy Device (EC0) with _STA returning Zero (disabled).
-# This satisfies AMD SSDTs utilizing Scope (\_SB.PCI0.SBRG.EC0) 
-# without interfering with the primary Device (EC).
 # ------------------------------------------------------------------
+# KITA MENGGUNAKAN _ADR BUKAN _HID AGAR LINUX TIDAK BINGUNG KARENA ADA 2 EC.
 sed -i '/Device (PS2K)/i \
         Device (EC0)\
         {\
-            Name (_HID, EisaId ("PNP0C09"))\
+            Name (_ADR, Zero)\
             Name (_STA, Zero)\
         }' "$FILE"
 
 # ------------------------------------------------------------------
 # FIX 6: _DSM Warning Resolution
-# Return a Package instead of a Buffer to satisfy strict ACPI parsing.
 # ------------------------------------------------------------------
 sed -i 's/Return (Buffer (Zero) {})/Return (Package (Zero) {})/g' "$FILE"
 
 # ------------------------------------------------------------------
-# NEW OPTIMIZATION 4: Fix MYEC Bug (Battery, Thermal, Lid Fix)
+# FIX 7: RELATIVE PATH BUG (PENYEBAB UTAMA BRIGHTNESS MATI!)
+# ------------------------------------------------------------------
+sed -i 's/\^\^\^GPP0/\\_SB.PCI0.GPP0/g' "$FILE"
+sed -i 's/\^\^\^GP17/\\_SB.PCI0.GP17/g' "$FILE"
+sed -i 's/\^\^\^\^NPCF/\\_SB.NPCF/g' "$FILE"
+
+
+# ------------------------------------------------------------------
+# OPTIMIZATION 1: Fix MYEC Bug (Battery, Thermal, Lid Fix)
+# Corrects SpaceID mapping so battery, CPU temp, and lid sensors work.
 # ------------------------------------------------------------------
 echo "-> Optimizing: Fixing MYEC Region Bug for Thermal & Battery..."
 sed -i '/Method (_REG, 2, NotSerialized)/,/CTSD = Zero/ s/If ((Arg0 == 0x03))/If ((Arg0 == 0x00))/' "$FILE"
 
 # ------------------------------------------------------------------
-# NEW OPTIMIZATION 5: Native ACPI Wakeup (Lid & PCIe)
+# OPTIMIZATION 2: Lid Wake ONLY (Avoids AE_ALREADY_EXISTS on PCIe)
 # ------------------------------------------------------------------
-echo "-> Optimizing: Restoring Native _PRW Wakeups..."
-sed -i 's/Method (RHRW, 0, NotSerialized)/Method (_PRW, 0, NotSerialized)/g' "$FILE"
+echo "-> Optimizing: Restoring Native _PRW Wakeups for LID0 only..."
+sed -i '/Device (LID0)/,/}/ s/Method (RHRW, 0, NotSerialized)/Method (_PRW, 0, NotSerialized)/g' "$FILE"
 
 # ------------------------------------------------------------------
-# NEW OPTIMIZATION 6: Prevent OSVR Downgrade by EC
+# OPTIMIZATION 3: Prevent EC from downgrading OS capabilities
+# Note: Using 0x0F instead of 0x10 to prevent 4-bit overflow!
 # ------------------------------------------------------------------
 echo "-> Optimizing: Blocking EC from downgrading OSVR..."
-sed -i '/If (_OSI ("Windows 2015"))/,/OSVR = 0x04/ s/OSVR = 0x05/OSVR = 0x10/g' "$FILE"
-sed -i '/If (_OSI ("Windows 2015"))/,/OSVR = 0x04/ s/OSVR = 0x04/OSVR = 0x10/g' "$FILE"
+sed -i '/Method (_REG, 2, NotSerialized)/,/CTSD = Zero/ {
+    s/OSVR = 0x05/OSVR = 0x0F/g
+    s/OSVR = 0x04/OSVR = 0x0F/g
+    s/OSVR = 0x03/OSVR = 0x0F/g
+    s/OSVR = 0x02/OSVR = 0x0F/g
+    s/OSVR = One/OSVR = 0x0F/g
+}' "$FILE"
 
 # ------------------------------------------------------------------
-# NEW OPTIMIZATION 7: S3 Instant Wake & DAS3 Sabotage Fix
+# OPTIMIZATION 4: S3 Instant Wake Fix (Blocks PCIe root/USB Wake)
 # ------------------------------------------------------------------
 echo "-> Optimizing: Patching GPRW for S3 Instant Wake & DAS3..."
 sed -i '/If ((DAS3 == Zero))/,+6 s/^/\/\//' "$FILE"
 sed -i '/Return (PRWP)/i \
-        If ((Arg0 == 0x08) || (Arg0 == 0x0D) || (Arg0 == 0x0E)) {\n            PRWP [One] = Zero\n        }' "$FILE"
+        If ((Arg0 == 0x08) || (Arg0 == 0x0D) || (Arg0 == 0x0E) || (Arg0 == 0x0F)) {\n            PRWP [One] = Zero\n        }' "$FILE"
+
+# ------------------------------------------------------------------
+# OPTIMIZATION 5: Unlock Deep S3 Sleep & Remove Linux Penalty
+# Note: Using 0x0F instead of 0x10 to prevent 4-bit overflow!
+# ------------------------------------------------------------------
+echo "-> Optimizing: Unlocking S3 Deep Sleep..."
+sed -i 's/Name (XS3, Package/Name (_S3, Package/' "$FILE"
+sed -i '/If (MCTH (_OS, "Linux"))/,/}/ s/OSVR = 0x03/OSVR = 0x0F/' "$FILE"
+
 
 # ------------------------------------------------------------------
 # AUTOMATIC OEM REVISION BUMP (Epoch Time)
